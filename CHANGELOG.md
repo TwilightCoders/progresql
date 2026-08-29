@@ -19,11 +19,30 @@ Newest first.
   `nbtsort.c` already keys the scan skip.
 
   The failure was undetectable from inside: an empty btree is structurally
-  valid, so `bt_index_check` reported it clean, and `heapallindexed` is
-  unsupported on spanning indexes. **To detect a hollow index, use
-  `pgstatindex(idx).leaf_pages = 0`** (from `pgstattuple`) against an index
-  whose tree holds rows -- `pg_class.relpages`/`reltuples` are stale until
-  `ANALYZE` and will not do.
+  valid, so `bt_index_check` reported it clean, and `heapallindexed` -- the check
+  that would have caught it -- is unsupported on spanning indexes.
+
+  **To detect a damaged spanning index, compare its live entry count to the row
+  count of its tree, and flag when entries are FEWER than rows.** A unique index
+  holding fewer entries than rows means those rows are not indexed, so uniqueness
+  is not enforced for them; there is no benign explanation. Count with
+  `pageinspect`, excluding the high key that `bt_page_items` reports on every
+  non-rightmost leaf:
+
+  ```sql
+  SELECT sum(s.live_items) AS entries
+    FROM generate_series(1, pg_relation_size($1)/8192 - 1) b
+    CROSS JOIN LATERAL bt_page_stats($1, b) s
+   WHERE s.type = 'l';
+  ```
+
+  Do **not** rely on emptiness alone (`leaf_pages = 0`, size, page count, tree
+  level): those detect only a *freshly* hollowed index, and once inserts have
+  re-armed their own entries a hollow index regains pages and passes every
+  structural measure while still missing every pre-existing row. Nor on
+  `pg_class.relpages`/`reltuples`, which are stale until `ANALYZE`. The same
+  comparison run the other way -- entries far exceeding rows -- indicates
+  deferred-drain debris (see 0.2.5); both conditions are cleared by a rebuild.
 
   **Recovering an index hollowed by an earlier `REINDEX`:** upgrading fixes the
   rebuild path but does not repopulate an already-hollow index. Recreate it --
