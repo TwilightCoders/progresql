@@ -813,12 +813,31 @@ progresql_rebuild_spanning_for_rewritten_partition(Oid relid)
 	if (rel == NULL)
 		return;
 
-	/* Only a storage-bearing leaf partition can sit under a spanning root. */
-	if (rel->rd_rel->relispartition &&
-		rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+	/*
+	 * Only a storage-bearing leaf can sit under a spanning root -- but a leaf is
+	 * a declarative partition OR an inheritance child, exactly as
+	 * progresql_clean_spanning_indexes_for_partition already tests.  Keying this
+	 * on relispartition alone skipped every inheritance child, leaving its
+	 * entries pointing at pre-rewrite TIDs: the uniqueness probe would then
+	 * follow one into a block the compaction had removed and raise a bare
+	 * "could not read blocks" error from an ordinary INSERT, and a deleted key
+	 * could never be reused.
+	 */
+	if (rel->rd_rel->relkind == RELKIND_RELATION &&
+		(rel->rd_rel->relispartition || has_superclass(relid)))
 	{
-		RemoveSpanningPartitionMapForPartition(relid);
-		CommandCounterIncrement();	/* make the delete visible to the backfill */
+		/*
+		 * Retire this leaf's existing entries before re-inserting.  Previously
+		 * only the partseq *mapping* was dropped, which left the old entries in
+		 * the tree under a partseq that no longer resolved: inert (the probe
+		 * skips an unresolvable partseq) but permanent, so every rewrite added a
+		 * full set and the index grew without bound -- 300 rows became 600
+		 * entries, then 900.  Retirement is queued and applied at pre-commit,
+		 * and the backfill below allocates a *fresh* partseq because the map was
+		 * dropped, so the queued retirement can never reach the new entries.
+		 */
+		progresql_clean_spanning_indexes_for_partition(rel, true);
+		CommandCounterIncrement();	/* make the map delete visible to the backfill */
 		progresql_backfill_spanning_indexes_for_attached_partition(rel);
 	}
 

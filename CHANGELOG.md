@@ -52,13 +52,44 @@ Newest first.
   leaving no index at all. The rebuild doubles as an audit: if rows violating
   uniqueness accumulated while the index was hollow, `CREATE` refuses and names
   the key.
+- **A table rewrite of an inheritance child corrupted the spanning index.**
+  `VACUUM FULL`, `CLUSTER`, and rewriting `ALTER TABLE` forms move every TID, so
+  the leaf's index entries must be retired and rebuilt. That was gated on
+  `relispartition`, true only for *declarative* partitions, so an `INHERITS`
+  child kept its pre-rewrite entries: the uniqueness probe would follow one into
+  a block compaction had removed and raise a bare `could not read blocks ...` from
+  an ordinary `INSERT`, and a deleted key could never be reused. Plain `VACUUM`
+  did not heal it. The gate now matches the one the DROP/DETACH cleanup path
+  already used (declarative partition **or** inheritance child), and the leaf's
+  old entries are now retired rather than orphaned under a discarded partseq --
+  which previously left every rewrite adding a full set of entries that nothing
+  would ever reclaim.
+- **A parallel index build of a spanning index on an inheritance root produced a
+  malformed duplicate entry per root row.** `btbuild` skips the root heap scan
+  for spanning indexes only on the *serial* path; the parallel heap scan has no
+  such guard. A declarative root is excluded because it has no storage to scan,
+  but an inheritance root does, so a build large enough to go parallel indexed
+  the root's own rows with the ordinary callback -- storing the raw `tableoid`
+  instead of a `partseq` -- and the backfill then indexed them again correctly.
+  Measured at 241,083 entries for 120,100 rows. Spanning index builds are now
+  never parallelised. Enforcement was not lost, so the only symptom was an index
+  roughly twice the size it should be.
 - **`REINDEX ... CONCURRENTLY` was not refused** for a spanning index on an
   inheritance root. The refusal was gated on the same relkind test, so instead
   of erroring it produced the same hollow index by a path that has no
   repopulation step at all. It now keys on the index being spanning.
 
+These four share one root cause: a predicate that is true only for declarative
+partitions (`relispartition`, or `relkind = RELKIND_PARTITIONED_TABLE`) standing
+in for "is this under a spanning root", which is equally true of `INHERITS`
+children. `nbtsort.c` had already reached the correct rule and says so in its own
+comment -- key on the spanning marker, not the root's relkind -- and the other
+paths did not ask. Every such predicate in spanning-reachable code has now been
+audited against that rule.
+
 Pinned by `progresql_reindex`, covering both root kinds, `REINDEX TABLE`, the
-root's own rows, and the `CONCURRENTLY` refusal.
+root's own rows, the `CONCURRENTLY` refusal, rewrite-then-probe (including that a
+deleted key stays reusable), and a parallel-eligible build.
 
 ## 2026-08-13 (v18.3-0.2.6)
 

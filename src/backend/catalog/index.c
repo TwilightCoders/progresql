@@ -3098,9 +3098,24 @@ index_build(Relation heapRelation,
 	 * relation reference leaks at the end of the command and triggers
 	 * "resource was not closed" warnings.
 	 */
+	/*
+	 * ProgreSQL: never build a spanning (GLOBAL) index in parallel.  btbuild's
+	 * skip of the root heap scan lives only on the serial path (nbtsort.c); the
+	 * parallel heap scan has no such guard, so it would index the root's own
+	 * rows with the ordinary build callback -- storing the raw tableoid instead
+	 * of the leaf's partseq -- and BuildSpanningIndexFromPartitions would then
+	 * index those same rows again, correctly, leaving a malformed duplicate per
+	 * root row (measured: 241,083 entries for 120,100 rows).
+	 *
+	 * A declarative root is already excluded by the relkind test, since it has
+	 * no storage to scan.  An inheritance root does have storage, so it reaches
+	 * here and must be excluded on the spanning marker instead -- the same rule
+	 * nbtsort.c states for the scan skip.
+	 */
 	if (parallel && IsNormalProcessingMode() &&
 		indexRelation->rd_indam->amcanbuildparallel &&
-		heapRelation->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		heapRelation->rd_rel->relkind != RELKIND_PARTITIONED_TABLE &&
+		!RelationIsSpanning(indexRelation))
 		indexInfo->ii_ParallelWorkers =
 			plan_create_index_workers(RelationGetRelid(heapRelation),
 									  RelationGetRelid(indexRelation));

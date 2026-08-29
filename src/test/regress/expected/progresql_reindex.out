@@ -75,5 +75,68 @@ DETAIL:  Key (id)=(1) already exists.
 REINDEX INDEX CONCURRENTLY rp_pkey;
 ERROR:  cannot reindex spanning (GLOBAL) index "rp_pkey" concurrently
 HINT:  Use REINDEX INDEX without CONCURRENTLY.
+-- ------------------------------------------------- rewrite (VACUUM FULL etc.)
+-- A table rewrite moves every TID, so the spanning index's entries for that leaf
+-- must be retired and rebuilt.  That was gated on relispartition -- true only for
+-- DECLARATIVE partitions -- so an INHERITS child kept pre-rewrite entries: the
+-- uniqueness probe would follow one into a block compaction had removed and raise
+-- a bare "could not read blocks" error from an ordinary INSERT, and a deleted key
+-- could never be reused.
+CREATE TABLE rw (id int NOT NULL, v text);
+CREATE TABLE rw_c (x text) INHERITS (rw);
+CREATE UNIQUE INDEX rw_g ON rw (id) GLOBAL;
+INSERT INTO rw_c (id, v, x) SELECT g, 'a', 'x' FROM generate_series(1, 600) g;
+DELETE FROM rw_c WHERE id % 2 = 0;          -- leave gaps so compaction shifts TIDs
+VACUUM rw, rw_c;
+VACUUM FULL rw_c;
+-- a surviving row whose TID moved: must be a clean duplicate error, not an I/O error
+INSERT INTO rw_c (id, v, x) VALUES (599, 'dup', 'x');
+ERROR:  duplicate key value violates unique constraint "rw_g"
+DETAIL:  Key (id)=(599) already exists.
+-- a deleted id must be reusable, not permanently claimed by a stale entry
+INSERT INTO rw_c (id, v, x) VALUES (2, 'reuse', 'x');
+SELECT count(*) FROM rw WHERE id = 2;
+ count 
+-------
+     1
+(1 row)
+
+-- cross-leaf enforcement still holds after the rewrite
+INSERT INTO rw (id, v) VALUES (599, 'dup');
+ERROR:  duplicate key value violates unique constraint "rw_g"
+DETAIL:  Key (id)=(599) already exists.
+-- ------------------------------------------------------- parallel index build
+-- btbuild's skip of the root heap scan lives only on the SERIAL path; the
+-- parallel heap scan has no such guard.  A declarative root is excluded already
+-- (no storage to scan), but an inheritance root has storage, so a parallel build
+-- would index its rows with the ordinary callback -- storing the raw tableoid
+-- rather than a partseq -- and the backfill would then index them again, leaving
+-- a malformed duplicate per root row.  The GUCs below make a small table
+-- parallel-eligible so the guard is actually exercised.
+CREATE TABLE pb (id int NOT NULL, v text);
+CREATE TABLE pb_c (x text) INHERITS (pb);
+INSERT INTO pb (id, v)      SELECT g, 'r' FROM generate_series(1, 5000) g;
+INSERT INTO pb_c (id, v, x) SELECT 100000 + g, 'c', 'x' FROM generate_series(1, 50) g;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_maintenance_workers = 2;
+CREATE UNIQUE INDEX pb_g ON pb (id) GLOBAL;
+-- one entry per row, not two
+SELECT (SELECT count(*) FROM pb) AS rows,
+       (SELECT count(*) FROM pb WHERE id = 1) AS one_row;
+ rows | one_row 
+------+---------
+ 5050 |       1
+(1 row)
+
+INSERT INTO pb_c (id, v, x) VALUES (1, 'dup', 'x');   -- root row, dup from child
+ERROR:  duplicate key value violates unique constraint "pb_g"
+DETAIL:  Key (id)=(1) already exists.
+INSERT INTO pb (id, v) VALUES (100001, 'dup');        -- child row, dup from root
+ERROR:  duplicate key value violates unique constraint "pb_g"
+DETAIL:  Key (id)=(100001) already exists.
+RESET min_parallel_table_scan_size;
+RESET max_parallel_maintenance_workers;
+DROP TABLE pb_c, pb CASCADE;
+DROP TABLE rw_c, rw CASCADE;
 DROP TABLE rx_a, rx_b, rx CASCADE;
 DROP TABLE rp CASCADE;
