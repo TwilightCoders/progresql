@@ -67,6 +67,27 @@ progresql_version(PG_FUNCTION_ARGS)
 }
 
 /*
+ * RelidIsSpanningIndex
+ *		True if the given index OID is a ProgreSQL spanning (GLOBAL) index.
+ *		Cheap syscache probe, for callers that hold only the index's OID and
+ *		must not key off the *table's* relkind -- a spanning index's root may be
+ *		a declarative partitioned table OR an ordinary inheritance parent, and
+ *		the two have different relkinds.
+ */
+bool
+RelidIsSpanningIndex(Oid indexOid)
+{
+	HeapTuple	tup = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexOid));
+	bool		result;
+
+	if (!HeapTupleIsValid(tup))
+		return false;			/* index vanished; not our problem here */
+	result = IndexFormIsSpanning((Form_pg_index) GETSTRUCT(tup));
+	ReleaseSysCache(tup);
+	return result;
+}
+
+/*
  * pg_index_is_global
  *
  * SQL-callable: is the given index a ProgreSQL spanning (GLOBAL) index?  The

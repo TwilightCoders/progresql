@@ -143,6 +143,9 @@ test: progresql_fk_clone
 # progresql_partial runs serially: it uses common table names and ALTER ...
 # INHERIT, same reason as progresql_inherit.
 test: progresql_partial
+# progresql_reindex runs serially: it REINDEXes spanning indexes over both an
+# inheritance root and a declarative root, and inspects index size.
+test: progresql_reindex
 test: progresql_dumpdef
 
 # ----------

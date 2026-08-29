@@ -110,5 +110,7 @@ extern bool progresql_leaf_has_spanning_ancestor(Relation relation);
 extern bool RelationHasSpanningAncestor(Relation relation);
 /* true if relation has a spanning (GLOBAL) index of its own (FK referenced-side) */
 extern bool RelationHasSpanningIndex(Relation relation);
+/* true if the given index OID is a spanning (GLOBAL) index -- cheap syscache probe */
+extern bool RelidIsSpanningIndex(Oid indexOid);
 
 #endif							/* SPANNING_H */

@@ -3892,14 +3892,23 @@ reindex_index(const ReindexStmt *stmt, Oid indexId,
 	ResetReindexProcessing();
 
 	/*
-	 * ProgreSQL: REINDEX of a spanning index leaves it empty because the
-	 * heap is the partitioned root with no storage.  Repopulate from leaf
-	 * partitions so cross-partition uniqueness is restored.  Detect the
-	 * spanning index by indnuniqatts > 0.  Must run after
-	 * ResetReindexProcessing so the index is openable again.
+	 * ProgreSQL: REINDEX of a spanning index always leaves it EMPTY -- btbuild
+	 * deliberately skips the root heap scan for any spanning index (nbtsort.c),
+	 * because a leaf's rows must be indexed with a partseq discriminator that
+	 * the ordinary build callback would not store.  Repopulating from the full
+	 * leaf set is therefore not an optimisation, it is the only thing that puts
+	 * entries in the index at all; skipping it silently drops cross-partition
+	 * uniqueness while leaving a structurally valid (and amcheck-clean) index.
+	 *
+	 * Key this on the spanning marker alone, exactly as nbtsort.c keys the scan
+	 * skip.  It must NOT be gated on the root's relkind: a spanning index's root
+	 * is a declarative partitioned table (RELKIND_PARTITIONED_TABLE) *or* an
+	 * ordinary inheritance parent (RELKIND_RELATION), and gating on the former
+	 * left every inheritance-rooted spanning index hollow after REINDEX.
+	 *
+	 * Must run after ResetReindexProcessing so the index is openable again.
 	 */
-	if (RelationIsSpanning(iRel) &&
-		heapRelation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	if (RelationIsSpanning(iRel))
 		BuildSpanningIndexFromPartitions(heapRelation, indexId);
 
 	/*

@@ -4,6 +4,43 @@ Changes ProgreSQL adds on top of stock PostgreSQL (`REL_18_STABLE`). Vanilla
 PostgreSQL behavior is unchanged unless a table opts in with the `GLOBAL` keyword.
 Newest first.
 
+## Unreleased
+
+### Fixed
+- **`REINDEX` of a spanning (`GLOBAL`) index rooted on an inheritance parent
+  rebuilt it EMPTY**, silently disabling cross-child uniqueness. `btbuild`
+  deliberately skips the root heap scan for any spanning index (a leaf's rows
+  must carry a partseq discriminator the ordinary build callback would not
+  store), so repopulating from the leaf set is not an optimisation -- it is the
+  only thing that puts entries in the index at all. That repopulation was gated
+  on the root's relkind being `RELKIND_PARTITIONED_TABLE`, so a root that is an
+  ordinary `INHERITS` parent (`RELKIND_RELATION`) fell through it and was left
+  hollow. The gate now keys on the spanning marker alone, exactly as
+  `nbtsort.c` already keys the scan skip.
+
+  The failure was undetectable from inside: an empty btree is structurally
+  valid, so `bt_index_check` reported it clean, and `heapallindexed` is
+  unsupported on spanning indexes. **To detect a hollow index, use
+  `pgstatindex(idx).leaf_pages = 0`** (from `pgstattuple`) against an index
+  whose tree holds rows -- `pg_class.relpages`/`reltuples` are stale until
+  `ANALYZE` and will not do.
+
+  **Recovering an index hollowed by an earlier `REINDEX`:** upgrading fixes the
+  rebuild path but does not repopulate an already-hollow index. Recreate it --
+  `DROP INDEX` + `CREATE UNIQUE INDEX ... GLOBAL`, or for a constraint-backed
+  one `ALTER TABLE ... DROP CONSTRAINT` + `ALTER TABLE ... ADD PRIMARY KEY (...)
+  GLOBAL` -- inside a transaction, so a failure rolls the drop back rather than
+  leaving no index at all. The rebuild doubles as an audit: if rows violating
+  uniqueness accumulated while the index was hollow, `CREATE` refuses and names
+  the key.
+- **`REINDEX ... CONCURRENTLY` was not refused** for a spanning index on an
+  inheritance root. The refusal was gated on the same relkind test, so instead
+  of erroring it produced the same hollow index by a path that has no
+  repopulation step at all. It now keys on the index being spanning.
+
+Pinned by `progresql_reindex`, covering both root kinds, `REINDEX TABLE`, the
+root's own rows, and the `CONCURRENTLY` refusal.
+
 ## 2026-08-13 (v18.3-0.2.6)
 
 ### Fixed

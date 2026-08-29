@@ -1,0 +1,79 @@
+--
+-- ProgreSQL: REINDEX of a spanning (GLOBAL) index
+--
+-- btbuild deliberately skips the root heap scan for ANY spanning index
+-- (nbtsort.c), because a leaf's rows must carry a partseq discriminator that the
+-- ordinary build callback would not store.  Repopulating from the leaf set is
+-- therefore not an optimisation -- it is the only thing that puts entries in the
+-- index at all.
+--
+-- The failure this pins was silent: the repopulation was gated on the ROOT's
+-- relkind being RELKIND_PARTITIONED_TABLE, so a spanning index rooted on an
+-- ordinary INHERITS parent was rebuilt EMPTY.  Cross-child uniqueness was then
+-- unenforced, and because an empty btree is structurally valid, amcheck
+-- reported it clean -- the verification path could not observe the failure the
+-- operation caused.
+--
+-- ------------------------------------------------------- inheritance root
+CREATE TABLE rx (id int NOT NULL, v text);
+CREATE TABLE rx_a (x text) INHERITS (rx);
+CREATE TABLE rx_b (y text) INHERITS (rx);
+CREATE UNIQUE INDEX rx_id_global ON rx (id) GLOBAL;
+INSERT INTO rx_a (id, v, x) SELECT g, 'a', 'x' FROM generate_series(1, 100) g;
+INSERT INTO rx_b (id, v, y) SELECT 100 + g, 'b', 'y' FROM generate_series(1, 100) g;
+-- an inheritance root has storage of its own; those rows must be indexed too
+INSERT INTO rx (id, v)      SELECT 200 + g, 'root' FROM generate_series(1, 50) g;
+REINDEX INDEX rx_id_global;
+-- the index must not be empty afterwards
+SELECT pg_relation_size('rx_id_global') > 8192 AS repopulated;
+ repopulated 
+-------------
+ t
+(1 row)
+
+-- cross-child uniqueness still enforced
+INSERT INTO rx_b (id, v, y) VALUES (1, 'dup', 'y');
+ERROR:  duplicate key value violates unique constraint "rx_id_global"
+DETAIL:  Key (id)=(1) already exists.
+-- and against the root's own rows
+INSERT INTO rx_a (id, v, x) VALUES (201, 'dup', 'x');
+ERROR:  duplicate key value violates unique constraint "rx_id_global"
+DETAIL:  Key (id)=(201) already exists.
+-- a genuinely new key is still accepted
+INSERT INTO rx_a (id, v, x) VALUES (9001, 'new', 'x');
+-- REINDEX TABLE reaches the same path
+REINDEX TABLE rx;
+SELECT pg_relation_size('rx_id_global') > 8192 AS still_populated;
+ still_populated 
+-----------------
+ t
+(1 row)
+
+INSERT INTO rx_b (id, v, y) VALUES (2, 'dup', 'y');
+ERROR:  duplicate key value violates unique constraint "rx_id_global"
+DETAIL:  Key (id)=(2) already exists.
+-- CONCURRENTLY is unsupported and must be refused, not silently hollow the index
+REINDEX INDEX CONCURRENTLY rx_id_global;
+ERROR:  cannot reindex spanning (GLOBAL) index "rx_id_global" concurrently
+HINT:  Use REINDEX INDEX without CONCURRENTLY.
+-- ------------------------------------------------------- declarative root
+CREATE TABLE rp (id int NOT NULL, t date NOT NULL, PRIMARY KEY (id) GLOBAL)
+  PARTITION BY RANGE (t);
+CREATE TABLE rp_a PARTITION OF rp FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+CREATE TABLE rp_b PARTITION OF rp FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+INSERT INTO rp SELECT g, '2025-06-01' FROM generate_series(1, 100) g;
+REINDEX INDEX rp_pkey;
+SELECT pg_relation_size('rp_pkey') > 8192 AS repopulated;
+ repopulated 
+-------------
+ t
+(1 row)
+
+INSERT INTO rp VALUES (1, '2026-06-01');   -- cross-partition dup, must fail
+ERROR:  duplicate key value violates unique constraint "rp_pkey"
+DETAIL:  Key (id)=(1) already exists.
+REINDEX INDEX CONCURRENTLY rp_pkey;
+ERROR:  cannot reindex spanning (GLOBAL) index "rp_pkey" concurrently
+HINT:  Use REINDEX INDEX without CONCURRENTLY.
+DROP TABLE rx_a, rx_b, rx CASCADE;
+DROP TABLE rp CASCADE;

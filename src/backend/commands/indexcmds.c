@@ -3939,17 +3939,15 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 									get_rel_name(relationOid))));
 
 				/*
-				 * ProgreSQL: a spanning (GLOBAL) index is the one kind of plain
-				 * (RELKIND_INDEX) index whose table is the storage-less
-				 * partitioned root.  REINDEX CONCURRENTLY would build the
-				 * replacement on that root --- scanning zero rows into an empty
-				 * index that silently drops cross-partition uniqueness --- and
+				 * ProgreSQL: REINDEX CONCURRENTLY would build the replacement by
+				 * scanning the root --- zero rows into an empty index that
+				 * silently drops cross-partition uniqueness --- and
 				 * never run BuildSpanningIndexFromPartitions (the repopulation
 				 * step lives only on the non-concurrent reindex path).  Reject it,
 				 * consistent with CONCURRENTLY being unsupported for spanning
 				 * indexes; the plain REINDEX rebuilds them correctly.
 				 */
-				if (heapRelation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+				if (RelidIsSpanningIndex(relationOid))
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("cannot reindex spanning (GLOBAL) index \"%s\" concurrently",
