@@ -113,4 +113,31 @@ extern bool RelationHasSpanningIndex(Relation relation);
 /* true if the given index OID is a spanning (GLOBAL) index -- cheap syscache probe */
 extern bool RelidIsSpanningIndex(Oid indexOid);
 
+/*
+ * RelationCanBeSpanningLeaf
+ *		Could this relation hold rows covered by a spanning (GLOBAL) index on
+ *		some ancestor?
+ *
+ * THE RULE, and the reason this is a function rather than an open-coded test:
+ * a spanning leaf is a declarative partition OR an inheritance child.  Never
+ * assume the former stands for both.  `relispartition` and
+ * `relkind == RELKIND_PARTITIONED_TABLE` are true only under declarative
+ * partitioning, and a spanning index's root is equally often an ordinary
+ * INHERITS parent -- so either one used as a proxy for "is this under a
+ * spanning root" silently excludes every inheritance tree.
+ *
+ * Four separate call sites (reindex repopulation, the REINDEX CONCURRENTLY
+ * refusal, the post-rewrite rebuild, and the parallel-build exclusion) each
+ * independently reached for that proxy, and each disabled or corrupted spanning
+ * behaviour for inheritance roots while looking obviously correct.  Call this,
+ * or key on the spanning marker itself (RelationIsSpanning / IndexFormIsSpanning
+ * / RelidIsSpanningIndex); do not reintroduce the proxy.
+ *
+ * Note this asks only whether the relation participates in a hierarchy.  A
+ * caller that also needs the leaf to have storage of its own must check
+ * relkind == RELKIND_RELATION separately -- an inheritance root has storage, a
+ * declarative root does not.
+ */
+extern bool RelationCanBeSpanningLeaf(Relation relation);
+
 #endif							/* SPANNING_H */

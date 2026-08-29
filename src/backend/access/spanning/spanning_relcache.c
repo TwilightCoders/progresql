@@ -104,6 +104,18 @@ progresql_spanning_ancestors(Oid relid)
 }
 
 /*
+ * RelationCanBeSpanningLeaf
+ *		See the rule stated in access/spanning.h -- a spanning leaf is a
+ *		declarative partition OR an inheritance child.
+ */
+bool
+RelationCanBeSpanningLeaf(Relation relation)
+{
+	return relation->rd_rel->relispartition ||
+		has_superclass(RelationGetRelid(relation));
+}
+
+/*
  * progresql_add_spanning_hotblocking_attrs
  *
  * ProgreSQL: a spanning (GLOBAL) index lives on a partitioned ROOT, not on the
@@ -134,8 +146,7 @@ progresql_add_spanning_hotblocking_attrs(Relation relation,
 	ListCell   *lc;
 	Relation	pg_index_rel;
 
-	if (!relation->rd_rel->relispartition &&
-		!has_superclass(leafOid))
+	if (!RelationCanBeSpanningLeaf(relation))
 		return;
 
 	ancestors = progresql_spanning_ancestors(leafOid);
@@ -276,8 +287,7 @@ progresql_leaf_has_spanning_ancestor(Relation relation)
 	Relation	pg_index_rel;
 	bool		found = false;
 
-	if (!relation->rd_rel->relispartition &&
-		!has_superclass(RelationGetRelid(relation)))
+	if (!RelationCanBeSpanningLeaf(relation))
 		return false;
 
 	ancestors = progresql_spanning_ancestors(RelationGetRelid(relation));

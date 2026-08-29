@@ -387,11 +387,8 @@ progresql_clean_spanning_indexes_for_partition(Relation partRel, bool drop_map)
 	ListCell   *lc;
 	Oid			partOid = RelationGetRelid(partRel);
 
-	/*
-	 * Only a relation that participates in a hierarchy (a declarative partition
-	 * or an inheritance child) can sit under a spanning root.
-	 */
-	if (!partRel->rd_rel->relispartition && !has_superclass(partOid))
+	/* only a relation participating in a hierarchy can sit under a spanning root */
+	if (!RelationCanBeSpanningLeaf(partRel))
 		return;
 
 	ancestors = progresql_spanning_ancestors(partOid);
@@ -824,7 +821,7 @@ progresql_rebuild_spanning_for_rewritten_partition(Oid relid)
 	 * could never be reused.
 	 */
 	if (rel->rd_rel->relkind == RELKIND_RELATION &&
-		(rel->rd_rel->relispartition || has_superclass(relid)))
+		RelationCanBeSpanningLeaf(rel))
 	{
 		/*
 		 * Retire this leaf's existing entries before re-inserting.  Previously

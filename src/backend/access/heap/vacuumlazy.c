@@ -3257,7 +3257,7 @@ progresql_rel_has_spanning_ancestor(Relation rel)
 	ListCell   *lc;
 	bool		found = false;
 
-	if (!rel->rd_rel->relispartition && !has_superclass(RelationGetRelid(rel)))
+	if (!RelationCanBeSpanningLeaf(rel))
 		return false;
 
 	ancestors = progresql_spanning_ancestors(RelationGetRelid(rel));
