@@ -122,7 +122,7 @@ forward-ports:
 
 | Function | Returns |
 |---|---|
-| `progresql_version()` | the fork **release** version (`'0.2.6'`, matching the `v18.3-X.Y.Z` tag), distinct from the PostgreSQL base reported by `server_version` — the supported fork-detection + version-gate hook (stock PostgreSQL has no such function) |
+| `progresql_version()` | the fork **release** version (`'0.2.7'`, matching the `v18.3-X.Y.Z` tag), distinct from the PostgreSQL base reported by `server_version` — the supported fork-detection + version-gate hook (stock PostgreSQL has no such function) |
 | `pg_index_is_global(regclass)` | whether an existing index is a spanning index; `NULL` for a non-index argument |
 | `pg_index_global_columns(regclass)` | the index's user-facing key column names, **excluding** the trailing `partseq` discriminator; `NULL` for a non-index or expression key |
 
@@ -410,6 +410,22 @@ git rebase upstream/REL_18_STABLE progresql-18
   a strictly tighter constraint than declared. Upgrading fixes new writes; an
   index built under the old behavior holds entries for rows the predicate
   rejects, so `REINDEX` it to drop them.)
+- **`ALTER TABLE ... NO INHERIT` does not remove a departing child's foreign-key
+  clones** (known gap). A child joining a spanning tree acquires the
+  referenced-side FK clones of every key targeting a spanning ancestor; nothing
+  removes them when it leaves, so — unlike `DETACH PARTITION`, which does the
+  equivalent cleanly — a child cannot be detached and then dropped. `DROP TABLE`
+  reports the *base* constraint as dependent (upstream's rule: the clone is an
+  internal dependency of the base, so Postgres names the owner), and `CASCADE`
+  therefore drops the base along with every one of its clones on other tables —
+  removing referential integrity from tables unrelated to the one being dropped.
+  Note this last part is stock PostgreSQL behavior, reproducible with declarative
+  partitioning and no `GLOBAL` index; the fork's gap is only the missing
+  `NO INHERIT` counterpart. Until it is fixed, remove such a child by dropping
+  each affected base constraint, dropping the table, and recreating the
+  constraints **in a single transaction** — the recreate regenerates clones for
+  the remaining children, and being one transaction there is no window in which
+  integrity is absent.
 - The per-statement cache is exactly that — per statement; it is rebuilt for
   each top-level DML.
 - **Logical replication of `UPDATE`/`DELETE`** from a spanning-indexed table

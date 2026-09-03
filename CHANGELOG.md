@@ -4,7 +4,7 @@ Changes ProgreSQL adds on top of stock PostgreSQL (`REL_18_STABLE`). Vanilla
 PostgreSQL behavior is unchanged unless a table opts in with the `GLOBAL` keyword.
 Newest first.
 
-## Unreleased
+## 2026-09-03 (v18.3-0.2.7)
 
 ### Fixed
 - **`REINDEX` of a spanning (`GLOBAL`) index rooted on an inheritance parent

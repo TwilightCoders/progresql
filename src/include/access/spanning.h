@@ -34,7 +34,7 @@
  * "feature-set" number that silently stayed at "1.0" across several feature
  * releases -- tying it to the release version is what stops that drift.)
  */
-#define PROGRESQL_VERSION_STR "0.2.6"
+#define PROGRESQL_VERSION_STR "0.2.7"
 
 extern void ExecInsertSpanningIndexTuples(TupleTableSlot *slot,
 										  ItemPointer tupleid,
@@ -132,6 +132,18 @@ extern bool RelidIsSpanningIndex(Oid indexOid);
  * behaviour for inheritance roots while looking obviously correct.  Call this,
  * or key on the spanning marker itself (RelationIsSpanning / IndexFormIsSpanning
  * / RelidIsSpanningIndex); do not reintroduce the proxy.
+ *
+ * The general failure this guards against, worth having in mind before touching
+ * anything spanning-related: the fork tends to implement spanning support for
+ * DECLARATIVE PARTITIONING and leave INHERITANCE behind.  It shows up two ways --
+ * a declarative-only predicate standing in for "under a spanning root" (what
+ * this function exists to prevent), and an inheritance counterpart simply never
+ * written for a partition operation that has one.  A known live example of the
+ * second: a child joining a spanning tree acquires the referenced-side FK clones
+ * via progresql_clone_referenced_fks_to_child, but ALTER TABLE ... NO INHERIT has
+ * no counterpart that removes them, so a child cannot leave the way a partition
+ * can DETACH.  When adding any spanning behaviour, ask what the inheritance case
+ * does -- and what the *undo* does.
  *
  * Note this asks only whether the relation participates in a hierarchy.  A
  * caller that also needs the leaf to have storage of its own must check
