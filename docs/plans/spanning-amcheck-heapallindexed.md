@@ -85,23 +85,81 @@ checker; anyone who wires up `amcheck` — the obvious, documented, correct thin
 to do — keeps the blind spot. Fixing `heapallindexed` fixes it for people who
 never read this file.
 
-## Interim detection
+## Interim detection — the supported substitute today
 
-Until then, compare live index entries to the tree's row count and flag when
-entries are **fewer** than rows. A unique index holding fewer entries than rows
-means those rows are not indexed; there is no benign explanation. Count with
-`pageinspect`, excluding the high key present on every non-rightmost leaf:
+This gap has a working substitute. Use it; do not read the sections above as
+meaning spanning indexes cannot be checked at all.
+
+**The test: compare live index entries to the tree's row count, and flag when
+entries are FEWER than rows.** A unique index holding fewer entries than rows
+means those rows are not indexed, so uniqueness is not enforced for them. There
+is no benign explanation. Needs only `pageinspect`.
 
 ```sql
-SELECT sum(s.live_items) AS entries
-  FROM generate_series(1, pg_relation_size($1)/8192 - 1) b
-  CROSS JOIN LATERAL bt_page_stats($1, b) s
+BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;   -- same snapshot for both halves
+
+SELECT sum(s.live_items)                                    -- raw item count
+         - count(*) FILTER (WHERE s.btpo_next <> 0)         -- minus one high key
+       AS entries                                           --   per non-rightmost leaf
+  FROM generate_series(1, pg_relation_size('<index>')/8192 - 1) b
+  CROSS JOIN LATERAL bt_page_stats('<index>', b) s
  WHERE s.type = 'l';
+
+SELECT count(*) FROM <root>;    -- inheritance: counts the WHOLE tree by default
+COMMIT;
 ```
 
-Do not substitute emptiness (`leaf_pages = 0`, size, page count, tree level) for
-this. Those detect only a *freshly* emptied index; once writes have re-armed
+Two mistakes have each been made independently, by different people, on the same
+index — both make a damaged index look healthy or the numbers look incoherent:
+
+- **Forgetting the high keys.** `bt_page_items` / `bt_page_stats` count the high
+  key as an item on every *non-rightmost* leaf, so a raw `live_items` sum reads
+  high by roughly one per leaf page. On a real 7,460-leaf index that was 7,459
+  phantom entries — enough to shift a reported deficit by that exact amount. The
+  `FILTER (WHERE s.btpo_next <> 0)` term above is the correction.
+- **A non-recursive row count.** The denominator must cover the *whole
+  transitive tree*. `SELECT count(*) FROM root` does that by default for
+  inheritance; enumerating children by hand does not, and missing a deep child
+  silently shrinks the population. One monitor reported 1,105,275 rows against a
+  real 1,595,088 this way — its deficit was roughly right while its total was
+  short by ~490,000, which made every reading look untrustworthy even though the
+  verdict was correct.
+
+Take both halves in one snapshot. Readings taken minutes apart on a live corpus
+cannot be compared, and reconciling them wastes more time than the measurement.
+
+**Do not substitute emptiness** (`leaf_pages = 0`, size, page count, tree level)
+for this. Those detect only a *freshly* emptied index; once writes have re-armed
 their own entries it regains pages and passes every structural measure while
 still missing every pre-existing row — which is the state anyone actually
-discovers, weeks later. The inverse reading of the same comparison (entries far
-exceeding rows) indicates deferred-drain debris; both are cleared by a rebuild.
+discovers, weeks later. Nor `pg_class.relpages`/`reltuples`, stale until
+`ANALYZE`. The inverse reading of the same comparison (entries far exceeding
+rows) indicates deferred-drain debris; both are cleared by a rebuild.
+
+### Is the damage historical or ongoing?
+
+Worth knowing before scheduling a repair: a rebuild that holds is a fix, one that
+re-accumulates is a treadmill. If the key is a time-ordered uuid (v7), the newest
+key in the index dates the most recent successful indexing:
+
+```sql
+-- newest key on the rightmost leaf vs newest row in the heap
+SELECT to_timestamp(('x'||substring(replace(<id>::text,'-','') from 1 for 12))
+                    ::bit(48)::bigint / 1000.0);
+```
+
+If the newest indexed key tracks the newest heap row, writes are being indexed
+and the deficit is a fixed historical set — a rebuild is permanent. If it stops
+at some past instant, indexing is still failing and the rebuild will not hold.
+Measured this way on a live corpus: newest indexed key five minutes old against a
+heap row 27 seconds old, confirming a historical deficit from a single event
+seven weeks earlier.
+
+### Why `bt_index_check` cannot be made to work by permissions
+
+Worth stating plainly because it is easy to underread: the `heapallindexed`
+refusal is **not** a privilege check. Running as superuser raises the identical
+error. No grant, role change, or connection change reaches it — the verification
+that would catch a hollow spanning index is unavailable to *every* caller on
+*every* spanning index. Anything built on the assumption that `amcheck` covers
+these indexes is resting on a check that does not run.
