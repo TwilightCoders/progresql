@@ -1220,6 +1220,8 @@ DefineIndex(Oid tableId,
 	if (progresql_bypass)
 	{
 		int			N = indexInfo->ii_NumIndexKeyAttrs;
+		int			total = indexInfo->ii_NumIndexAttrs;	/* key + INCLUDE */
+		int			j;
 
 		/* Record how many columns are truly unique (excludes the discriminator). */
 		indexInfo->ii_NumUniqKeyAtts = N;
@@ -1234,24 +1236,47 @@ DefineIndex(Oid tableId,
 		 * pg_attribute as INT4OID --- so introspection, opclass, and the
 		 * comparator all agree (the value really is an int32 partseq).
 		 */
-		Assert(N < INDEX_MAX_KEYS);
+		Assert(total < INDEX_MAX_KEYS);
+
+		/*
+		 * The discriminator is a KEY column, so it belongs at position N --
+		 * immediately after the user keys and BEFORE any INCLUDE columns, which
+		 * occupy [N, total).  Shift those up by one rather than overwriting
+		 * them: setting ii_NumIndexAttrs = N + 1 discarded every INCLUDE
+		 * column, so `CREATE UNIQUE INDEX ... INCLUDE (x) GLOBAL` was accepted
+		 * and silently built an index with no x in it.
+		 */
+		for (j = total; j > N; j--)
+			indexInfo->ii_IndexAttrNumbers[j] = indexInfo->ii_IndexAttrNumbers[j - 1];
 		indexInfo->ii_IndexAttrNumbers[N] = TableOidAttributeNumber;
 		indexInfo->ii_NumIndexKeyAttrs = N + 1;
-		indexInfo->ii_NumIndexAttrs = N + 1;
+		indexInfo->ii_NumIndexAttrs = total + 1;
 
-		/* Extend the collation/opclass/coloption/opclassOptions arrays. */
-		collationIds = repalloc(collationIds, (N + 1) * sizeof(Oid));
-		opclassIds = repalloc(opclassIds, (N + 1) * sizeof(Oid));
-		coloptions = repalloc(coloptions, (N + 1) * sizeof(int16));
-		opclassOptions = repalloc(opclassOptions, (N + 1) * sizeof(Datum));
+		/*
+		 * The per-attribute arrays are sized to the TOTAL attribute count, not
+		 * the key count, so they must grow to total + 1 and shift the same way.
+		 * Growing them to N + 1 truncated away the INCLUDE columns' entries.
+		 */
+		collationIds = repalloc(collationIds, (total + 1) * sizeof(Oid));
+		opclassIds = repalloc(opclassIds, (total + 1) * sizeof(Oid));
+		coloptions = repalloc(coloptions, (total + 1) * sizeof(int16));
+		opclassOptions = repalloc(opclassOptions, (total + 1) * sizeof(Datum));
+
+		for (j = total; j > N; j--)
+		{
+			collationIds[j] = collationIds[j - 1];
+			opclassIds[j] = opclassIds[j - 1];
+			coloptions[j] = coloptions[j - 1];
+			opclassOptions[j] = opclassOptions[j - 1];
+		}
 
 		collationIds[N] = InvalidOid;
 		opclassIds[N] = GetDefaultOpClass(INT4OID, BTREE_AM_OID);
 		coloptions[N] = 0;
 		opclassOptions[N] = (Datum) 0;
 
-		/* Add a column name for the appended partseq discriminator key column. */
-		indexColNames = lappend(indexColNames, "partseq");
+		/* the discriminator's name goes at N as well, not after the INCLUDEs */
+		indexColNames = list_insert_nth(indexColNames, N, "partseq");
 	}
 
 	/* Is index safe for others to ignore?  See set_indexsafe_procflags() */

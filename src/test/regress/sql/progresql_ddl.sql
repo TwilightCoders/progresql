@@ -375,3 +375,45 @@ CREATE UNIQUE INDEX ui_desc_i ON ui_desc (id DESC);
 ALTER TABLE ui_desc ADD CONSTRAINT ui_desc_uq UNIQUE USING INDEX ui_desc_i;  -- must fail
 
 DROP TABLE ui_desc, ui_plain, ui_pk_c, ui_pk, ui_a, ui_b, ui_root CASCADE;
+
+--
+-- Clause fidelity: every clause the parser accepts must survive into the index
+--
+-- Three defects have shared one shape: the DDL layer answering a question it did
+-- not actually evaluate.  WHERE was accepted and never enforced (fixed 0.2.6);
+-- INCLUDE was accepted and silently dropped; USING INDEX was rejected for the
+-- wrong reason.  Appending the partseq discriminator is where a clause gets
+-- lost, so this asserts the whole matrix at once rather than one clause at a
+-- time -- a fourth member should fail here rather than in someone's schema.
+CREATE TABLE cf (id int NOT NULL, t text, n int, c text COLLATE "C");
+CREATE TABLE cf_child (x text) INHERITS (cf);
+
+CREATE UNIQUE INDEX cf_incl    ON cf (id) INCLUDE (t) GLOBAL;
+CREATE UNIQUE INDEX cf_incl2   ON cf (n) INCLUDE (t, c) GLOBAL;
+CREATE UNIQUE INDEX cf_where   ON cf (id) WHERE n IS NOT NULL GLOBAL;
+CREATE UNIQUE INDEX cf_desc    ON cf (id DESC) GLOBAL;
+CREATE UNIQUE INDEX cf_nulls   ON cf (id NULLS FIRST) GLOBAL;
+CREATE UNIQUE INDEX cf_opclass ON cf (t text_pattern_ops) GLOBAL;
+CREATE UNIQUE INDEX cf_collate ON cf (c COLLATE "POSIX") GLOBAL;
+CREATE UNIQUE INDEX cf_ff      ON cf (id) WITH (fillfactor=70) GLOBAL;
+CREATE UNIQUE INDEX cf_nnd     ON cf (n) NULLS NOT DISTINCT GLOBAL;
+-- the same index without GLOBAL, as the control for INCLUDE
+CREATE UNIQUE INDEX cf_v_incl  ON cf (t) INCLUDE (n);
+
+SELECT c.relname, i.indnatts, i.indnkeyatts, i.indnuniqatts,
+       pg_get_indexdef(i.indexrelid) AS definition
+  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+ WHERE c.relname LIKE 'cf\_%'
+ ORDER BY c.relname;
+
+-- and the discriminator sits between the keys and the INCLUDEs, not after them
+SELECT a.attname, a.attnum
+  FROM pg_attribute a
+ WHERE a.attrelid = 'cf_incl2'::regclass AND a.attnum > 0
+ ORDER BY a.attnum;
+
+-- enforcement is unaffected by carrying an INCLUDE payload
+INSERT INTO cf_child (id, t, n, c, x) VALUES (1, 'a', 1, 'p', 'z');
+INSERT INTO cf (id, t, n, c) VALUES (1, 'b', 2, 'q');   -- must fail on cf_incl
+
+DROP TABLE cf_child, cf CASCADE;

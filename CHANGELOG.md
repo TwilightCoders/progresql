@@ -26,14 +26,28 @@ Newest first.
   is the difference between a repair needing a maintenance window and one that
   does not.
 
-### Known
-- **`INCLUDE` columns are silently dropped from a `GLOBAL` index.**
-  `CREATE UNIQUE INDEX ... (id) INCLUDE (x) GLOBAL` is accepted and the `INCLUDE`
-  column does not appear in the built index (`pg_get_indexdef` omits it,
-  `indnatts` counts only the key columns plus the discriminator). A non-spanning
-  index keeps it. Accepted-then-ignored, with no error — the same shape as the
-  `WHERE` predicate defect fixed in 0.2.6. Not yet fixed; do not rely on
-  `INCLUDE` with `GLOBAL`.
+- **`INCLUDE` columns were silently dropped from a `GLOBAL` index.**
+  `CREATE UNIQUE INDEX ... (id) INCLUDE (x) GLOBAL` was accepted and built an
+  index with no `x` in it. Appending the partseq discriminator set
+  `ii_NumIndexAttrs` to the key count plus one — discarding every `INCLUDE`
+  column, which lives *after* the key attributes — and shrank the per-attribute
+  arrays (sized to the total, not the key count) to match. The discriminator is
+  now inserted at the end of the *key* columns with the `INCLUDE` columns and
+  their array entries shifted up, so both survive. A non-spanning index was
+  never affected.
+
+  Note an `INCLUDE` payload on a spanning index is not readable by a query — the
+  planner skips spanning indexes entirely — so this is about the DDL meaning what
+  it says, and about dump/restore and schema comparison round-tripping, rather
+  than about index-only scans.
+
+Pinned by a clause-fidelity matrix in `progresql_ddl` asserting that every clause
+the parser accepts survives into the built index: `INCLUDE`, `WHERE`, `DESC`,
+`NULLS FIRST`, a non-default opclass, `COLLATE`, `fillfactor` and
+`NULLS NOT DISTINCT`, plus the attribute ordering that puts the discriminator
+between the key columns and the `INCLUDE` columns. Three defects have now shared
+one shape — the DDL layer answering a question it did not evaluate — so the
+matrix asserts the whole set at once rather than one clause at a time.
 
 ## 2026-09-03 (v18.3-0.2.7)
 

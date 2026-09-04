@@ -477,3 +477,63 @@ LINE 1: ALTER TABLE ui_desc ADD CONSTRAINT ui_desc_uq UNIQUE USING I...
                                 ^
 DETAIL:  Cannot create a primary key or unique constraint using such an index.
 DROP TABLE ui_desc, ui_plain, ui_pk_c, ui_pk, ui_a, ui_b, ui_root CASCADE;
+--
+-- Clause fidelity: every clause the parser accepts must survive into the index
+--
+-- Three defects have shared one shape: the DDL layer answering a question it did
+-- not actually evaluate.  WHERE was accepted and never enforced (fixed 0.2.6);
+-- INCLUDE was accepted and silently dropped; USING INDEX was rejected for the
+-- wrong reason.  Appending the partseq discriminator is where a clause gets
+-- lost, so this asserts the whole matrix at once rather than one clause at a
+-- time -- a fourth member should fail here rather than in someone's schema.
+CREATE TABLE cf (id int NOT NULL, t text, n int, c text COLLATE "C");
+CREATE TABLE cf_child (x text) INHERITS (cf);
+CREATE UNIQUE INDEX cf_incl    ON cf (id) INCLUDE (t) GLOBAL;
+CREATE UNIQUE INDEX cf_incl2   ON cf (n) INCLUDE (t, c) GLOBAL;
+CREATE UNIQUE INDEX cf_where   ON cf (id) WHERE n IS NOT NULL GLOBAL;
+CREATE UNIQUE INDEX cf_desc    ON cf (id DESC) GLOBAL;
+CREATE UNIQUE INDEX cf_nulls   ON cf (id NULLS FIRST) GLOBAL;
+CREATE UNIQUE INDEX cf_opclass ON cf (t text_pattern_ops) GLOBAL;
+CREATE UNIQUE INDEX cf_collate ON cf (c COLLATE "POSIX") GLOBAL;
+CREATE UNIQUE INDEX cf_ff      ON cf (id) WITH (fillfactor=70) GLOBAL;
+CREATE UNIQUE INDEX cf_nnd     ON cf (n) NULLS NOT DISTINCT GLOBAL;
+-- the same index without GLOBAL, as the control for INCLUDE
+CREATE UNIQUE INDEX cf_v_incl  ON cf (t) INCLUDE (n);
+SELECT c.relname, i.indnatts, i.indnkeyatts, i.indnuniqatts,
+       pg_get_indexdef(i.indexrelid) AS definition
+  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+ WHERE c.relname LIKE 'cf\_%'
+ ORDER BY c.relname;
+  relname   | indnatts | indnkeyatts | indnuniqatts |                                       definition                                        
+------------+----------+-------------+--------------+-----------------------------------------------------------------------------------------
+ cf_collate |        2 |           2 |            1 | CREATE UNIQUE INDEX cf_collate ON public.cf USING btree (c COLLATE "POSIX") GLOBAL
+ cf_desc    |        2 |           2 |            1 | CREATE UNIQUE INDEX cf_desc ON public.cf USING btree (id DESC) GLOBAL
+ cf_ff      |        2 |           2 |            1 | CREATE UNIQUE INDEX cf_ff ON public.cf USING btree (id) WITH (fillfactor='70') GLOBAL
+ cf_incl    |        3 |           2 |            1 | CREATE UNIQUE INDEX cf_incl ON public.cf USING btree (id) INCLUDE (t) GLOBAL
+ cf_incl2   |        4 |           2 |            1 | CREATE UNIQUE INDEX cf_incl2 ON public.cf USING btree (n) INCLUDE (t, c) GLOBAL
+ cf_nnd     |        2 |           2 |            1 | CREATE UNIQUE INDEX cf_nnd ON public.cf USING btree (n) NULLS NOT DISTINCT GLOBAL
+ cf_nulls   |        2 |           2 |            1 | CREATE UNIQUE INDEX cf_nulls ON public.cf USING btree (id NULLS FIRST) GLOBAL
+ cf_opclass |        2 |           2 |            1 | CREATE UNIQUE INDEX cf_opclass ON public.cf USING btree (t text_pattern_ops) GLOBAL
+ cf_v_incl  |        2 |           1 |            0 | CREATE UNIQUE INDEX cf_v_incl ON public.cf USING btree (t) INCLUDE (n)
+ cf_where   |        2 |           2 |            1 | CREATE UNIQUE INDEX cf_where ON public.cf USING btree (id) WHERE (n IS NOT NULL) GLOBAL
+(10 rows)
+
+-- and the discriminator sits between the keys and the INCLUDEs, not after them
+SELECT a.attname, a.attnum
+  FROM pg_attribute a
+ WHERE a.attrelid = 'cf_incl2'::regclass AND a.attnum > 0
+ ORDER BY a.attnum;
+ attname | attnum 
+---------+--------
+ n       |      1
+ partseq |      2
+ t       |      3
+ c       |      4
+(4 rows)
+
+-- enforcement is unaffected by carrying an INCLUDE payload
+INSERT INTO cf_child (id, t, n, c, x) VALUES (1, 'a', 1, 'p', 'z');
+INSERT INTO cf (id, t, n, c) VALUES (1, 'b', 2, 'q');   -- must fail on cf_incl
+ERROR:  duplicate key value violates unique constraint "cf_incl"
+DETAIL:  Key (id)=(1) already exists.
+DROP TABLE cf_child, cf CASCADE;
