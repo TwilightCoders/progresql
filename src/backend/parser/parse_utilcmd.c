@@ -34,6 +34,7 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_collation.h"
+#include "catalog/pg_index.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
@@ -2410,6 +2411,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 		oidvector  *indclass;
 		Datum		indclassDatum;
 		int			i;
+		int16		nkeyatts;
 
 		/* Grammar should not allow this with explicit column list */
 		Assert(constraint->keys == NIL);
@@ -2516,12 +2518,34 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 											   Anum_pg_index_indclass);
 		indclass = (oidvector *) DatumGetPointer(indclassDatum);
 
+		/*
+		 * ProgreSQL: a spanning (GLOBAL) index's user-facing key is its leading
+		 * indnuniqatts columns.  indnkeyatts additionally counts the trailing
+		 * partseq discriminator, which is an internal system column (tableoid)
+		 * with no default opclass -- so walking indnkeyatts here examined it as
+		 * though it were a user key column and rejected every spanning index
+		 * with "column number N does not have default sorting behavior", and
+		 * had it passed it would have produced UNIQUE (userkey, tableoid)
+		 * rather than the declared UNIQUE (userkey) GLOBAL.
+		 *
+		 * That left no way to promote an existing spanning index to a
+		 * constraint: ADD CONSTRAINT ... UNIQUE (...) GLOBAL works but builds a
+		 * second index, which on a large tree is an index build under
+		 * concurrent writes rather than a catalog change.
+		 */
+		nkeyatts = IndexFormIsSpanning(index_form) ?
+			index_form->indnuniqatts : index_form->indnkeyatts;
+
 		for (i = 0; i < index_form->indnatts; i++)
 		{
 			int16		attnum = index_form->indkey.values[i];
 			const FormData_pg_attribute *attform;
 			char	   *attname;
 			Oid			defopclass;
+
+			/* skip the spanning discriminator: not a key, not an INCLUDE column */
+			if (i >= nkeyatts && i < index_form->indnkeyatts)
+				continue;
 
 			/*
 			 * We shouldn't see attnum == 0 here, since we already rejected
@@ -2537,7 +2561,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 				attform = SystemAttributeDefinition(attnum);
 			attname = pstrdup(NameStr(attform->attname));
 
-			if (i < index_form->indnkeyatts)
+			if (i < nkeyatts)
 			{
 				/*
 				 * Insist on default opclass, collation, and sort options.

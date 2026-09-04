@@ -4,6 +4,37 @@ Changes ProgreSQL adds on top of stock PostgreSQL (`REL_18_STABLE`). Vanilla
 PostgreSQL behavior is unchanged unless a table opts in with the `GLOBAL` keyword.
 Newest first.
 
+## Unreleased
+
+### Fixed
+- **`ALTER TABLE ... ADD CONSTRAINT ... USING INDEX` now accepts a spanning
+  (`GLOBAL`) index.** The validation walks `indnkeyatts` columns insisting each
+  has default opclass, collation and sort options; on a spanning index
+  `indnkeyatts` counts the trailing partseq discriminator, an internal system
+  column with no default opclass. Every spanning index was therefore rejected
+  with `column number N does not have default sorting behavior` — and had it
+  passed, it would have built `UNIQUE (userkey, tableoid)` rather than the
+  declared `UNIQUE (userkey) GLOBAL`. The walk now uses `indnuniqatts` for a
+  spanning index and skips the discriminator, which is neither a key nor an
+  `INCLUDE` column.
+
+  This matters because it is the **only** way to add the `pg_constraint` row
+  without building a second index. `ADD CONSTRAINT ... GLOBAL` works but builds,
+  which on a large tree is an index build under concurrent writes; `USING INDEX`
+  is a catalog change — verified to leave `relfilenode` and index size unchanged.
+  For an installation whose spanning indexes exist without constraint rows, that
+  is the difference between a repair needing a maintenance window and one that
+  does not.
+
+### Known
+- **`INCLUDE` columns are silently dropped from a `GLOBAL` index.**
+  `CREATE UNIQUE INDEX ... (id) INCLUDE (x) GLOBAL` is accepted and the `INCLUDE`
+  column does not appear in the built index (`pg_get_indexdef` omits it,
+  `indnatts` counts only the key columns plus the discriminator). A non-spanning
+  index keeps it. Accepted-then-ignored, with no error — the same shape as the
+  `WHERE` predicate defect fixed in 0.2.6. Not yet fixed; do not rely on
+  `INCLUDE` with `GLOBAL`.
+
 ## 2026-09-03 (v18.3-0.2.7)
 
 ### Fixed

@@ -320,3 +320,58 @@ DROP TABLE pgddl_rw;
 DROP TABLE pgddl_data CASCADE;
 
 SELECT COUNT(*) FROM pg_class WHERE relname LIKE 'pgddl%';
+
+--
+-- ADD CONSTRAINT ... USING INDEX on a spanning index
+--
+-- Promoting an existing index to a constraint is the only route that adds the
+-- pg_constraint row WITHOUT building a second index -- it is a catalog change,
+-- not an index build, so it is safe on a large tree under concurrent writes
+-- where ADD CONSTRAINT ... GLOBAL (which builds) is not.
+--
+-- It used to be rejected: the validation walks indnkeyatts columns insisting on
+-- default opclass/collation/sort, and on a spanning index indnkeyatts counts the
+-- trailing partseq discriminator -- an internal system column with no default
+-- opclass. So every spanning index failed with "column number N does not have
+-- default sorting behavior", and had it passed it would have produced
+-- UNIQUE (userkey, tableoid) rather than the declared UNIQUE (userkey) GLOBAL.
+CREATE TABLE ui_root (id int NOT NULL, v text);
+CREATE TABLE ui_a (a text) INHERITS (ui_root);
+CREATE TABLE ui_b (b text) INHERITS (ui_root);
+CREATE UNIQUE INDEX ui_g ON ui_root (id) GLOBAL;
+INSERT INTO ui_a (id, v, a) SELECT g, 'a', 'x' FROM generate_series(1, 50) g;
+INSERT INTO ui_b (id, v, b) SELECT 100 + g, 'b', 'y' FROM generate_series(1, 50) g;
+
+-- the promotion must not rebuild: same relfilenode before and after
+SELECT relfilenode AS before_filenode FROM pg_class WHERE relname = 'ui_g' \gset
+ALTER TABLE ui_root ADD CONSTRAINT ui_g UNIQUE USING INDEX ui_g;
+SELECT relfilenode = :before_filenode AS index_not_rebuilt
+  FROM pg_class WHERE relname = 'ui_g';
+
+-- the constraint is the USER key only -- no tableoid -- and stays spanning
+SELECT conname, contype, pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'ui_g';
+SELECT pg_index_is_global(conindid) AS still_global FROM pg_constraint WHERE conname = 'ui_g';
+
+-- and it still enforces across children
+INSERT INTO ui_b (id, v, b) VALUES (1, 'dup', 'y');
+
+-- PRIMARY KEY takes the same path
+CREATE TABLE ui_pk (id int NOT NULL, v text);
+CREATE TABLE ui_pk_c (w text) INHERITS (ui_pk);
+CREATE UNIQUE INDEX ui_pk_g ON ui_pk (id) GLOBAL;
+INSERT INTO ui_pk_c (id, v, w) SELECT g, 'a', 'b' FROM generate_series(1, 50) g;
+ALTER TABLE ui_pk ADD CONSTRAINT ui_pk_g PRIMARY KEY USING INDEX ui_pk_g;
+SELECT contype, pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'ui_pk_g';
+INSERT INTO ui_pk (id, v) VALUES (1, 'dup');
+
+-- an ordinary index is unaffected, and a genuinely non-default sort is still refused
+CREATE TABLE ui_plain (id int NOT NULL);
+CREATE UNIQUE INDEX ui_plain_i ON ui_plain (id);
+ALTER TABLE ui_plain ADD CONSTRAINT ui_plain_uq UNIQUE USING INDEX ui_plain_i;
+SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'ui_plain_uq';
+
+CREATE TABLE ui_desc (id int NOT NULL);
+CREATE UNIQUE INDEX ui_desc_i ON ui_desc (id DESC);
+ALTER TABLE ui_desc ADD CONSTRAINT ui_desc_uq UNIQUE USING INDEX ui_desc_i;  -- must fail
+
+DROP TABLE ui_desc, ui_plain, ui_pk_c, ui_pk, ui_a, ui_b, ui_root CASCADE;
