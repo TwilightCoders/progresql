@@ -134,7 +134,7 @@ DROP TABLE pg_ml2_sub;
 SELECT progresql_version();
  progresql_version 
 -------------------
- 0.2.7
+ 0.2.8
 (1 row)
 
 SELECT to_regproc('progresql_version') IS NOT NULL AS is_progresql;

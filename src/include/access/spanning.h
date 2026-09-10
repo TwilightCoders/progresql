@@ -34,7 +34,7 @@
  * "feature-set" number that silently stayed at "1.0" across several feature
  * releases -- tying it to the release version is what stops that drift.)
  */
-#define PROGRESQL_VERSION_STR "0.2.7"
+#define PROGRESQL_VERSION_STR "0.2.8"
 
 extern void ExecInsertSpanningIndexTuples(TupleTableSlot *slot,
 										  ItemPointer tupleid,

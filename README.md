@@ -122,7 +122,7 @@ forward-ports:
 
 | Function | Returns |
 |---|---|
-| `progresql_version()` | the fork **release** version (`'0.2.7'`, matching the `v18.3-X.Y.Z` tag), distinct from the PostgreSQL base reported by `server_version` — the supported fork-detection + version-gate hook (stock PostgreSQL has no such function) |
+| `progresql_version()` | the fork **release** version (`'0.2.8'`, matching the `v18.3-X.Y.Z` tag), distinct from the PostgreSQL base reported by `server_version` — the supported fork-detection + version-gate hook (stock PostgreSQL has no such function) |
 | `pg_index_is_global(regclass)` | whether an existing index is a spanning index; `NULL` for a non-index argument |
 | `pg_index_global_columns(regclass)` | the index's user-facing key column names, **excluding** the trailing `partseq` discriminator; `NULL` for a non-index or expression key |
 
